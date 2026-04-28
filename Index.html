@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meteo Salerno</title>
+
+    <!-- PWA Meta -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Meteo Salerno">
+    <meta name="theme-color" content="#667eea">
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icon-192.png">
+
+    <style>
+        :root {
+            --day-bg: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --night-bg: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--day-bg);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            color: #fff;
+            transition: background 0.5s ease;
+        }
+        body.night { background: var(--night-bg); }
+    .container { max-width: 420px; width: 100%; }
+    .card {
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(12px);
+            border-radius: 20px;
+            padding: 28px;
+            margin-bottom: 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+    .city { font-size: 2rem; font-weight: 700; margin-bottom: 4px; }
+    .date { opacity: 0.8; margin-bottom: 20px; font-size: 0.95rem; }
+    .main { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+    .temp { font-size: 3.5rem; font-weight: 200; line-height: 1; }
+    .desc { font-size: 1.1rem; text-transform: capitalize; opacity: 0.9; }
+    .details { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.2); }
+    .detail-item { text-align: center; }
+    .detail-label { font-size: 0.75rem; opacity: 0.7; margin-bottom: 4px; }
+    .detail-value { font-size: 1rem; font-weight: 600; }
+    .forecast-title { font-size: 1.1rem; font-weight: 600; margin-bottom: 16px; }
+    .forecast-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.1); }
+    .forecast-row:last-child { border-bottom: none; }
+    .forecast-day { width: 70px; font-weight: 500; }
+    .forecast-icon { font-size: 1.3rem; }
+    .forecast-temp { font-weight: 600; }
+    .sea { display: flex; justify-content: space-around; text-align: center; }
+    .footer { text-align: center; margin-top: 12px; font-size: 0.75rem; opacity: 0.6; }
+    .loading { text-align: center; padding: 40px 0; opacity: 0.8; }
+    .error { text-align: center; padding: 20px 0; color: #ffb3b3; }
+    .offline { background: rgba(255,180,0,0.2); padding: 8px; border-radius: 8px; text-align: center; margin-bottom: 16px; font-size: 0.85rem; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="offline-banner" style="display:none;" class="offline">Sei offline. Dati salvati mostrati.</div>
+        <div class="card">
+            <div class="city">Salerno</div>
+            <div class="date" id="date">Caricamento...</div>
+            <div id="weather-content" class="loading">Recupero dati meteo...</div>
+            <div class="footer">Aggiornato: <span id="updated">--</span> | Fonte: Open-Meteo</div>
+        </div>
+        <div class="card">
+            <div class="forecast-title">Prossimi 5 giorni</div>
+            <div id="forecast-content" class="loading">Caricamento...</div>
+        </div>
+        <div class="card">
+            <div class="forecast-title">Meteo Mare - Golfo di Salerno</div>
+            <div id="sea-content" class="loading">Caricamento...</div>
+        </div>
+    </div>
+
+    <script>
+        const LAT = 40.6828;
+        const LON = 14.7689;
+        const weatherCodeMap = {
+            0: { desc: "Sereno", icon: "☀️" }, 1: { desc: "Preval. sereno", icon: "🌤️" },
+            2: { desc: "Parz. nuvoloso", icon: "⛅" }, 3: { desc: "Coperto", icon: "☁️" },
+            45: { desc: "Nebbia", icon: "🌫️" }, 51: { desc: "Pioviggine", icon: "🌦️" },
+            61: { desc: "Pioggia debole", icon: "🌧️" }, 63: { desc: "Pioggia", icon: "🌧️" },
+            65: { desc: "Pioggia forte", icon: "⛈️" }, 80: { desc: "Rovesci", icon: "🌦️" },
+            95: { desc: "Temporale", icon: "⛈️" }
+        };
+
+        function setTheme(sunrise, sunset) {
+            const hour = new Date().getHours();
+            const sr = new Date(sunrise).getHours();
+            const ss = new Date(sunset).getHours();
+            if (hour < sr || hour >= ss) document.body.classList.add('night');
+        }
+
+        function formatDay(dateStr, idx) {
+            if (idx === 0) return "Oggi";
+            return new Date(dateStr).toLocaleDateString('it-IT', { weekday: 'short' });
+        }
+
+        function saveCache(data) {
+            localStorage.setItem('meteo-salerno-cache', JSON.stringify({ data, time: Date.now() }));
+        }
+
+        function loadCache() {
+            const cache = localStorage.getItem('meteo-salerno-cache');
+            return cache? JSON.parse(cache) : null;
+        }
+
+        async function fetchWeather() {
+            try {
+                const weatherURL = `https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset&timezone=Europe%2FRome&forecast_days=6`;
+                const marineURL = `https://marine-api.open-meteo.com/v1/marine?latitude=${LAT}&longitude=${LON}&current=sea_surface_temperature,wave_height&timezone=Europe%2FRome`;
+                const [weatherRes, marineRes] = await Promise.all([fetch(weatherURL), fetch(marineURL)]);
+                const weather = await weatherRes.json();
+                const marine = await marineRes.json();
+                const payload = { weather, marine };
+                saveCache(payload);
+                render(payload);
+                document.getElementById('offline-banner').style.display = 'none';
+            } catch (err) {
+                const cache = loadCache();
+                if (cache) {
+                    render(cache.data);
+                    document.getElementById('offline-banner').style.display = 'block';
+                } else {
+                    document.getElementById('weather-content').innerHTML = `<div class="error">Serve connessione al primo avvio.</div>`;
+                }
+            }
+        }
+
+        function render({ weather, marine }) {
+            const now = new Date();
+            document.getElementById('date').textContent = now.toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+            document.getElementById('updated').textContent = now.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+            const c = weather.current;
+            const code = weatherCodeMap[c.weather_code] || { desc: "N/D", icon: "❓" };
+            document.getElementById('weather-content').innerHTML = `
+                <div class="main">
+                    <div>
+                        <div class="temp">${Math.round(c.temperature_2m)}°</div>
+                        <div class="desc">${code.desc}</div>
+                    </div>
+                    <div style="font-size: 4rem;">${code.icon}</div>
+                </div>
+                <div class="details">
+                    <div class="detail-item"><div class="detail-label">Max / Min</div><div class="detail-value">${Math.round(weather.daily.temperature_2m_max[0])}° / ${Math.round(weather.daily.temperature_2m_min[0])}°</div></div>
+                    <div class="detail-item"><div class="detail-label">Umidità</div><div class="detail-value">${c.relative_humidity_2m}%</div></div>
+                    <div class="detail-item"><div class="detail-label">Vento</div><div class="detail-value">${Math.round(c.wind_speed_10m)} km/h</div></div>
+                </div>`;
+            document.getElementById('forecast-content').innerHTML = weather.daily.time.slice(0, 5).map((day, i) => {
+                const code = weatherCodeMap[weather.daily.weather_code[i]] || { icon: "❓" };
+                return `<div class="forecast-row"><div class="forecast-day">${formatDay(day, i)}</div><div class="forecast-icon">${code.icon}</div><div class="forecast-temp">${Math.round(weather.daily.temperature_2m_max[i])}° / ${Math.round(weather.daily.temperature_2m_min[i])}°</div></div>`;
+            }).join('');
+            const m = marine.current;
+            const waveDesc = m.wave_height < 0.5? "Calmo" : m.wave_height < 1.25? "Poco mosso" : "Mosso";
+            document.getElementById('sea-content').innerHTML = `
+                <div class="sea">
+                    <div class="detail-item"><div class="detail-label">Temp. Acqua</div><div class="detail-value">${m.sea_surface_temperature.toFixed(1)}°C</div></div>
+                    <div class="detail-item"><div class="detail-label">Mare</div><div class="detail-value">${waveDesc}</div></div>
+                    <div class="detail-item"><div class="detail-label">Onde</div><div class="detail-value">${m.wave_height.toFixed(1)} m</div></div>
+                </div>`;
+            setTheme(weather.daily.sunrise[0], weather.daily.sunset[0]);
+        }
+
+        // PWA: registra service worker
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js');
+        }
+
+        fetchWeather();
+        setInterval(fetchWeather, 3600000);
+    </script>
+</body>
+</html>
